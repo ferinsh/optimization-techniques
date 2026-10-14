@@ -151,12 +151,17 @@ def pivot(tableau, pivot_row, pivot_col):
 
 
 def simplex_iterations(tableau, basis, num_total):
+
     """Run primal Simplex iterations until optimal or unbounded."""
     iteration = 0
     max_iterations = 1000
 
     while iteration < max_iterations:
+        
         iteration += 1
+        print(f"iteration {iteration}")
+        for row in tableau:
+            print(row)
 
         objective_row = tableau[-1]
 
