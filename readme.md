@@ -10,15 +10,36 @@ The long-term goal is to bring multiple Operations Research and optimization tec
 
 ### Graphical Method for Linear Programming
 
-- Enter objective function coefficients.
-- Choose between maximization and minimization.
-- Add linear constraints with different inequality operators.
+- Enter objective function coefficients for a two-variable LPP.
+- Choose maximization or minimization.
+- Add and remove constraints using `<=`, `>=`, or `=`.
 - Visualize constraint lines and the feasible region.
-- Identify and label corner points of the feasible region.
-- Calculate the objective function value at candidate solutions.
-- Identify optimal solutions for supported problems.
-- Detect unbounded problems.
-- Save input settings automatically and restore them when reopening the application.
+- Identify and label feasible corner points.
+- Evaluate the objective function at candidate solutions.
+- Display optimal point(s) and the optimal objective value for supported problems.
+- Report infeasible and unbounded problem statuses.
+- Automatically save graphical-method inputs and restore them when the application restarts.
+- Autosave inputs every 30 seconds and when the application closes.
+
+### Simplex Method
+
+- Enter objective-function coefficients for multiple decision variables.
+- Add and remove constraints.
+- Choose constraint relations (`<=`, `>=`, or `=`) in the interface.
+- Run the tableau-based Simplex implementation for supported maximization problems.
+- Display the solution status, iteration count, decision-variable values, and maximum objective value.
+- Load a built-in example problem.
+
+**Current Simplex limitation:** The connected solver currently supports problems that can start with a feasible slack-variable basis after RHS normalization. Problems requiring artificial variables, including some `>=` and equality constraints, need a future Big M or Two-Phase implementation. The interface currently handles maximization.
+
+### Additional Method Pages
+
+The sidebar also provides separate pages for:
+
+- **Big M Method** — planned; page is currently a placeholder.
+- **Transportation Problems** — planned; page is currently a placeholder.
+
+These pages establish the navigation structure for adding more Operations Research techniques in future updates.
 
 ## Technology Stack
 
@@ -34,34 +55,40 @@ The long-term goal is to bring multiple Operations Research and optimization tec
 OR_PYTHON_APP/
 │
 ├── OR_GRAPHICAL_SOLVER/
-│   ├── __pycache__/
-│   ├── lpp_settings.json
-│   ├── main.py
-│   └── solver.py
+│   ├── __pycache__/             # Python cache (generated)
+│   ├── lpp_settings.json        # Local saved graphical-method inputs, if present
+│   └── solver.py                # Graphical-method solver
 │
-├── app.py
-├── requirements.txt
+├── SIMPLEX_METHOD/
+│   ├── __pycache__/             # Python cache (generated)
+│   ├── algorithm.md             # Simplex algorithm notes
+│   └── solver.py                # Simplex tableau implementation
+│
+├── main.py                      # Existing application entry point (if used)
+├── main_with_simplex_ui.py      # Sidebar application with Graphical and Simplex pages
+├── app.py                       # Existing launcher or application entry point (if used)
+├── requirements.txt             # Python dependencies
 ├── .gitignore
-├── OR Graphical Method Solver.spec
-│
-├── .venv/       # Local Python virtual environment
-├── build/       # PyInstaller build files
-└── dist/        # Generated application build
+├── OR Graphical Method Solver.spec  # PyInstaller configuration
+├── .venv/                       # Local virtual environment (not committed)
+├── build/                       # PyInstaller build output (not committed)
+└── dist/                        # Packaged application output (not committed)
 ```
 
 ### Important Files
 
 | File | Purpose |
 |---|---|
-| `app.py` | Application entry point or main application launcher, depending on the current setup. |
-| `OR_GRAPHICAL_SOLVER/main.py` | Graphical solver interface and application logic. |
-| `OR_GRAPHICAL_SOLVER/solver.py` | Linear programming calculations and optimization logic. |
-| `OR_GRAPHICAL_SOLVER/lpp_settings.json` | Stores saved application inputs and settings. |
-| `requirements.txt` | Python dependencies required to run the application. |
-| `OR Graphical Method Solver.spec` | PyInstaller configuration for packaging the desktop application. |
-| `.gitignore` | Specifies files and folders that Git should ignore. |
+| `main_with_simplex_ui.py` | Current sidebar-based interface connecting the Graphical Method and Simplex pages. |
+| `OR_GRAPHICAL_SOLVER/solver.py` | Feasible-region, corner-point, and graphical LPP solving logic. |
+| `SIMPLEX_METHOD/solver.py` | Tableau-based Simplex solver for supported maximization problems. |
+| `SIMPLEX_METHOD/algorithm.md` | Notes describing the Simplex algorithm. |
+| `OR_GRAPHICAL_SOLVER/lpp_settings.json` | Local persisted graphical-method inputs, when present. |
+| `requirements.txt` | Python packages required by the application. |
+| `OR Graphical Method Solver.spec` | PyInstaller configuration; review its paths before using it to package the sidebar application. |
+| `.gitignore` | Specifies generated and local files that Git should ignore. |
 
-*The descriptions above reflect the visible folder and filenames; update them if responsibilities change as the codebase develops.*
+The sidebar application loads the two `solver.py` files from their separate folders. Keep those files in their current locations unless you also update the imports.
 
 ## Installation and Setup
 
@@ -100,19 +127,15 @@ python -m pip install -r requirements.txt
 
 ### 5. Run the application
 
-If `app.py` is the configured entry point:
+From the project root, run the sidebar application:
 
 ```powershell
-python app.py
+python main_with_simplex_ui.py
 ```
 
-Alternatively, if `OR_GRAPHICAL_SOLVER/main.py` is the intended entry point, run:
+The app imports the graphical solver from `OR_GRAPHICAL_SOLVER/solver.py` and the Simplex solver from `SIMPLEX_METHOD/solver.py`.
 
-```powershell
-python OR_GRAPHICAL_SOLVER/main.py
-```
-
-Use the entry point that matches the current application setup.
+If you are running an older entry point instead, use the command appropriate to that version.
 
 ## Building the Windows Application
 
@@ -134,15 +157,16 @@ The generated application will normally be placed in the `dist/` directory. The 
 
 ## Roadmap
 
-The following methods are planned for future development:
-
 - [x] Graphical Method for two-variable LPP
-- [ ] Simplex Method
-- [ ] Big M Method
-- [ ] Two-Phase Method
-- [ ] Transportation Problems
-- [ ] Assignment Problems
-- [ ] Additional Operations Research techniques
+- [x] Sidebar navigation between method pages
+- [x] Simplex Method UI connected to a basic tableau solver
+- [ ] Show each intermediate simplex tableau and pivot operation
+- [ ] Add support for artificial variables with the Big M Method
+- [ ] Implement the Two-Phase Method
+- [ ] Implement Transportation Problems
+- [ ] Implement Assignment Problems
+- [ ] Add further Operations Research techniques
+- [ ] Add more validation and automated tests for solver edge cases
 
 ## Project Goals
 
@@ -154,7 +178,7 @@ The following methods are planned for future development:
 
 ## Development Status
 
-**Early development.** The Graphical Method is the initial focus, with additional algorithms planned.
+**Early development.** The sidebar-based application currently includes the Graphical Method and a Simplex page connected to a basic solver. Big M and Transportation pages are placeholders; additional methods and solver capabilities are planned.
 
 ## License
 
