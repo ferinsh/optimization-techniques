@@ -315,9 +315,25 @@ class GraphicalLPPApp:
         self.constraint_rows.append(row_data)
 
     def remove_constraint(self, item):
-        if item in self.constraint_rows:
-            self.constraint_rows.remove(item)
-            self.refresh_constraint_rows()
+        if item not in self.constraint_rows:
+            return
+
+        # Destroy the widgets belonging to this constraint only.
+        for key in ("a", "b", "op", "rhs", "remove_button"):
+            item[key].destroy()
+
+        # Remove the constraint from the application's data.
+        self.constraint_rows.remove(item)
+
+        # Reposition the remaining rows.
+        self.refresh_constraint_rows()
+
+        # Clear the outdated solution and graph.
+        self.report.delete("1.0", "end")
+        self.draw_empty_graph()
+
+        # Save the updated constraints immediately.
+        self.save_state()
 
     def refresh_constraint_rows(self):
         # Re-grid existing widgets after a row is removed.
@@ -335,9 +351,8 @@ class GraphicalLPPApp:
         self.c2.delete(0, "end")
 
         for item in self.constraint_rows:
-            for widget in item.values():
-                if isinstance(widget, ttk.Widget):
-                    widget.destroy()
+            for key in ("a", "b", "op", "rhs", "remove_button"):
+                item[key].destroy()
 
         self.constraint_rows.clear()
         self.report.delete("1.0", "end")
