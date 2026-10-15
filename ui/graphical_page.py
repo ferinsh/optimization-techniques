@@ -14,6 +14,10 @@ from solvers.graphical_solver import (
     intersect,
 )
 
+import json
+
+from services.settings import save_method_state, load_method_state
+
 
 def combinations_for_plot(lines):
     return combinations(lines, 2)
@@ -73,6 +77,87 @@ class GraphicalPageMixin:
         self.canvas = FigureCanvasTkAgg(self.figure, master=graph_box)
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky='nsew')
         self.draw_empty_graph()
+
+    def save_state(self):
+        """Save only the graphical-method inputs to the shared settings file."""
+        state = {
+            "sense": self.sense.get(),
+            "c1": self.c1.get(),
+            "c2": self.c2.get(),
+            "constraints": [
+                {
+                    "a": row["a"].get(),
+                    "b": row["b"].get(),
+                    "op": row["op"].get(),
+                    "rhs": row["rhs"].get(),
+                }
+                for row in self.constraint_rows
+            ],
+        }
+
+        try:
+            save_method_state(self.save_path, "graphical_method", state)
+        except (OSError, TypeError, ValueError) as error:
+            print(f"Could not save graphical-method inputs: {error}")
+
+    def load_state(self):
+        """Restore graphical-method inputs from the shared settings file."""
+        try:
+            state = load_method_state(self.save_path, "graphical_method")
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+            print(f"Could not load graphical-method inputs: {error}")
+            return False
+
+        if not state:
+            return False
+
+        if not isinstance(state, dict):
+            return False
+
+        sense = state.get("sense")
+        c1 = state.get("c1")
+        c2 = state.get("c2")
+        constraints = state.get("constraints")
+
+        if sense not in ("Maximize", "Minimize"):
+            return False
+        if c1 is None or c2 is None or not isinstance(constraints, list):
+            return False
+
+        required_keys = ("a", "b", "op", "rhs")
+        valid_operators = ("<=", ">=", "=")
+        for constraint in constraints:
+            if not isinstance(constraint, dict):
+                return False
+            if not all(key in constraint for key in required_keys):
+                return False
+            if constraint["op"] not in valid_operators:
+                return False
+
+        # Validate first, then update the widgets so invalid files do not
+        # partially replace the current problem.
+        self.c1.delete(0, "end")
+        self.c1.insert(0, str(c1))
+        self.c2.delete(0, "end")
+        self.c2.insert(0, str(c2))
+        self.sense.set(sense)
+
+        for row in self.constraint_rows:
+            for key in ("a", "b", "op", "rhs", "remove_button"):
+                widget = row.get(key)
+                if widget is not None:
+                    widget.destroy()
+        self.constraint_rows.clear()
+
+        for constraint in constraints:
+            self.add_constraint(
+                a=str(constraint["a"]),
+                b=str(constraint["b"]),
+                op=constraint["op"],
+                rhs=str(constraint["rhs"]),
+            )
+
+        return True
 
     def add_constraint(self, a='1', b='1', op='<=', rhs='10'):
         row = len(self.constraint_rows)

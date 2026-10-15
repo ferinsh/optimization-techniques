@@ -19,6 +19,9 @@ from solvers.simplex_solver import max_simplex
 
 from ui.simplex_tableau import SimplexTableauPage
 
+from services.settings import save_method_state, load_method_state
+import json
+
 
 class SimplexPageMixin:
 
@@ -121,8 +124,11 @@ class SimplexPageMixin:
         simplex_scroll.grid(row=0, column=1, sticky='ns')
         self.simplex_report.configure(yscrollcommand=simplex_scroll.set)
         self.simplex_constraint_rows = []
+        self.simplex_constraint_rows = []
         self.rebuild_simplex_inputs()
-        self.load_simplex_example()
+
+        if not self.load_simplex_state():
+            self.load_simplex_example()
 
     def show_tableau_iterations(self):
         self.simplex_inputs_view.grid_remove()
@@ -221,6 +227,7 @@ class SimplexPageMixin:
         for row_index, row in enumerate(self.simplex_constraint_rows):
             for col, widget in enumerate(row['widgets']):
                 widget.grid(row=row_index, column=col, padx=3, pady=2)
+        self.save_simplex_state()
 
     def load_simplex_example(self):
         self.simplex_var_count.set(2)
@@ -237,6 +244,7 @@ class SimplexPageMixin:
         self.add_simplex_constraint(['3', '2'], '<=', '18')
         self.simplex_report.delete('1.0', 'end')
         self.simplex_report.insert('end', 'Example loaded:\nMaximize Z = 3x1 + 5x2\nx1 <= 4\n2x2 <= 12\n3x1 + 2x2 <= 18\n')
+        self.save_simplex_state()
 
     def solve_simplex(self):
         if max_simplex is None:
@@ -286,3 +294,105 @@ class SimplexPageMixin:
                 self.simplex_report.insert('end', '\nThe problem could not be solved by the current basic Simplex implementation.\n')
         except (ValueError, TypeError, OverflowError, ArithmeticError) as error:
             messagebox.showerror('Simplex input/calculation error', str(error))
+
+    
+    def save_simplex_state(self):
+        state = {
+            "num_variables": self.simplex_var_count.get(),
+            "objective": [
+                entry.get()
+                for entry in self.simplex_objective_entries
+            ],
+            "constraints": [
+                {
+                    "coefficients": [
+                        entry.get()
+                        for entry in row["coefficients"]
+                    ],
+                    "op": row["op"].get(),
+                    "rhs": row["rhs"].get(),
+                }
+                for row in self.simplex_constraint_rows
+            ],
+        }
+
+        try:
+            save_method_state(
+                self.save_path,
+                "simplex_method",
+                state,
+            )
+        except (OSError, TypeError, ValueError) as error:
+            print(f"Could not save Simplex inputs: {error}")
+
+
+    def load_simplex_state(self):
+        try:
+            state = load_method_state(
+                self.save_path,
+                "simplex_method",
+            )
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+            print(f"Could not load Simplex inputs: {error}")
+            return False
+
+        if not state:
+            return False
+
+        # Validate the complete state before changing the UI.
+        num_variables = state.get("num_variables")
+        objective = state.get("objective")
+        constraints = state.get("constraints")
+
+        if (
+            not isinstance(num_variables, int)
+            or isinstance(num_variables, bool)
+            or not 1 <= num_variables <= 10
+        ):
+            return False
+
+        if not isinstance(objective, list) or len(objective) != num_variables:
+            return False
+
+        if not isinstance(constraints, list):
+            return False
+
+        for constraint in constraints:
+            if not isinstance(constraint, dict):
+                return False
+
+            coefficients = constraint.get("coefficients")
+
+            if (
+                not isinstance(coefficients, list)
+                or len(coefficients) != num_variables
+                or constraint.get("op") not in ("<=", ">=", "=")
+                or "rhs" not in constraint
+            ):
+                return False
+
+        # Rebuild the variable inputs for the saved variable count.
+        self.simplex_var_count.set(num_variables)
+        self.rebuild_simplex_inputs()
+
+        # Restore objective coefficients.
+        for entry, value in zip(self.simplex_objective_entries, objective):
+            entry.delete(0, "end")
+            entry.insert(0, str(value))
+
+        # Remove constraints created by the rebuild.
+        for row in list(self.simplex_constraint_rows):
+            for widget in row["widgets"]:
+                widget.destroy()
+
+        self.simplex_constraint_rows.clear()
+
+        # Restore the saved constraints.
+        for constraint in constraints:
+            self.add_simplex_constraint(
+                coefficients=[str(value) for value in constraint["coefficients"]],
+                op=constraint["op"],
+                rhs=str(constraint["rhs"]),
+            )
+
+        return True
