@@ -312,6 +312,226 @@ def max_simplex(obj_fn: list, constraints: list):
 
     return result
 
+def build_dual(obj_fn: list, constraints: list, sense: str = "Minimize", variable_signs=None):
+    """Build the mathematical dual for an LP with explicit constraint senses.
+
+    `constraints` use var1..varN, op, rhs. `variable_signs` may contain
+    'nonnegative', 'nonpositive', or 'free' for each primal variable.
+    Returns a dict describing the dual, including signs of dual variables.
+    """
+    sense = sense.strip().lower()
+    if sense not in ("minimize", "maximize"):
+        raise ValueError("sense must be 'Minimize' or 'Maximize'.")
+    if not obj_fn or not constraints:
+        raise ValueError("The objective and constraints must not be empty.")
+
+    n = len(obj_fn)
+    m = len(constraints)
+    signs = list(variable_signs or ["nonnegative"] * n)
+    if len(signs) != n:
+        raise ValueError("Provide one variable sign restriction per variable.")
+    valid_signs = {"nonnegative", "nonpositive", "free"}
+    if any(sign not in valid_signs for sign in signs):
+        raise ValueError("Variable signs must be nonnegative, nonpositive, or free.")
+
+    dual_sense = "Maximize" if sense == "minimize" else "Minimize"
+    dual_objective = [float(c["rhs"]) for c in constraints]
+    dual_variable_signs = []
+    for c in constraints:
+        op = c.get("op")
+        if op not in ("<=", ">=", "="):
+            raise ValueError(f"Invalid constraint operator: {op}")
+        if sense == "minimize":
+            dual_variable_signs.append({">=": "nonnegative", "<=": "nonpositive", "=": "free"}[op])
+        else:
+            dual_variable_signs.append({"<=": "nonnegative", ">=": "nonpositive", "=": "free"}[op])
+
+    dual_constraints = []
+    for j, sign in enumerate(signs):
+        coeffs = [float(c.get(f"var{j + 1}", 0)) for c in constraints]
+        if sense == "minimize":
+            op = {"nonnegative": "<=", "nonpositive": ">=", "free": "="}[sign]
+        else:
+            op = {"nonnegative": ">=", "nonpositive": "<=", "free": "="}[sign]
+        dual_constraints.append({
+            **{f"var{i + 1}": coeffs[i] for i in range(m)},
+            "op": op,
+            "rhs": float(obj_fn[j]),
+        })
+
+    steps = [
+        f"Primal objective: {sense.title()} Z = " + " + ".join(f"{float(c):g}x{i + 1}" for i, c in enumerate(obj_fn)),
+        f"Dual objective: {dual_sense} W = " + " + ".join(f"{float(c['rhs']):g}y{i + 1}" for i, c in enumerate(constraints)),
+        "Transpose the primal constraint coefficient matrix (A becomes A^T).",
+        "Assign dual-variable signs from the primal constraint directions.",
+        "Assign dual constraint directions from the primal variable sign restrictions.",
+    ]
+    return {
+        "sense": dual_sense,
+        "objective": dual_objective,
+        "constraints": dual_constraints,
+        "variable_signs": dual_variable_signs,
+        "steps": steps,
+    }
+
+
+def _solve_square_system(matrix, rhs):
+    """Solve a square linear system with Gaussian elimination; return None if singular."""
+    n = len(rhs)
+    if len(matrix) != n or any(len(row) != n for row in matrix):
+        return None
+    aug = [[float(v) for v in row] + [float(rhs[i])] for i, row in enumerate(matrix)]
+    for col in range(n):
+        pivot_row = max(range(col, n), key=lambda r: abs(aug[r][col]))
+        if abs(aug[pivot_row][col]) < EPSILON:
+            return None
+        aug[col], aug[pivot_row] = aug[pivot_row], aug[col]
+        pivot = aug[col][col]
+        aug[col] = [v / pivot for v in aug[col]]
+        for r in range(n):
+            if r == col:
+                continue
+            factor = aug[r][col]
+            if abs(factor) > EPSILON:
+                aug[r] = [aug[r][k] - factor * aug[col][k] for k in range(n + 1)]
+    return [aug[i][-1] for i in range(n)]
+
+
+def recover_primal_by_complementary_slackness(obj_fn, constraints, dual_solution, dual_problem):
+    """Recover a feasible primal optimum by enumerating active constraint bases.
+
+    This is a small-LP recovery routine, not a replacement for a general LP solver.
+    It currently assumes primal decision variables are nonnegative.
+    """
+    from itertools import combinations
+
+    n = len(obj_fn)
+    rows = []
+    for i, c in enumerate(constraints, start=1):
+        rows.append(([float(c.get(f"var{j + 1}", 0)) for j in range(n)], float(c["rhs"]), c["op"], f"primal constraint {i}"))
+    for j in range(n):
+        unit = [0.0] * n
+        unit[j] = 1.0
+        rows.append((unit, 0.0, ">=", f"x{j + 1} nonnegativity"))
+
+    # Complementary-slackness equations identify active primal constraints
+    # whenever their corresponding dual variable is nonzero.
+    forced = []
+    for i, y in enumerate(dual_solution):
+        if abs(y) > 1e-7 and i < len(constraints):
+            c = constraints[i]
+            forced.append(([float(c.get(f"var{j + 1}", 0)) for j in range(n)], float(c["rhs"]), f"constraint {i + 1}"))
+
+    target = float(dual_problem.get("optimum"))
+    candidates = []
+    for chosen in combinations(rows, n):
+        matrix = [item[0] for item in chosen]
+        rhs = [item[1] for item in chosen]
+        x = _solve_square_system(matrix, rhs)
+        if x is None or any(v < -1e-7 for v in x):
+            continue
+        feasible = True
+        for c in constraints:
+            lhs = sum(float(c.get(f"var{j + 1}", 0)) * x[j] for j in range(n))
+            b, op = float(c["rhs"]), c["op"]
+            if (op == "<=" and lhs > b + 1e-7) or (op == ">=" and lhs < b - 1e-7) or (op == "=" and abs(lhs - b) > 1e-7):
+                feasible = False
+                break
+        if not feasible:
+            continue
+
+        # Complementary slackness: y_i * (b_i - A_i x) = 0.
+        cs_ok = True
+        for i, y_value in enumerate(dual_solution):
+            if abs(y_value) <= 1e-7:
+                continue
+            c = constraints[i]
+            lhs = sum(float(c.get(f"var{j + 1}", 0)) * x[j] for j in range(n))
+            if abs(lhs - float(c["rhs"])) > 1e-6:
+                cs_ok = False
+                break
+        if not cs_ok:
+            continue
+
+        # Complementary slackness: x_j * (A^T y - c)_j = 0 for this
+        # minimization primal with nonnegative variables and a max dual.
+        dual_constraints = dual_problem.get("dual_problem", {}).get("constraints", [])
+        if not dual_constraints:
+            dual_constraints = dual_problem.get("constraints", [])
+        for j, x_value in enumerate(x):
+            if abs(x_value) <= 1e-7:
+                continue
+            dual_constraint = dual_constraints[j]
+            dual_lhs = sum(
+                float(dual_constraint.get(f"var{i + 1}", 0)) * float(dual_solution[i])
+                for i in range(len(dual_solution))
+            )
+            if abs(dual_lhs - float(dual_constraint["rhs"])) > 1e-6:
+                cs_ok = False
+                break
+        if not cs_ok:
+            continue
+
+        z = sum(float(obj_fn[j]) * x[j] for j in range(n))
+        if abs(z - target) <= 1e-6 * max(1.0, abs(target)):
+            candidates.append(([0.0 if abs(v) < EPSILON else v for v in x], z, chosen))
+    if not candidates:
+        return None, ["Complementary slackness was applied, but no feasible primal basis matching the dual objective was found."]
+
+    x, z, chosen = candidates[0]
+    steps = ["Complementary slackness: a nonzero dual variable implies its corresponding primal constraint is binding."]
+    steps.extend(f"Active equation used: {name}." for _, _, _, name in chosen)
+    steps.append("Check all original constraints and non-negativity conditions.")
+    steps.append(f"Primal objective Z = {z:g}; dual objective W = {target:g}.")
+    steps.append("Strong duality verified within numerical tolerance." if abs(z - target) <= 1e-6 * max(1.0, abs(target)) else "Objective values do not match within tolerance.")
+    return {"solution": x, "optimum": z}, steps
+
+
+def min_simplex(obj_fn: list, constraints: list):
+    """Minimize by solving the dual when it fits the current max-simplex backend.
+
+    The dual converter supports all <=, >= and = primal constraints for
+    nonnegative primal variables. The existing max_simplex backend has a
+    narrower feasible-starting-basis requirement, so unsupported dual forms
+    return a clear error rather than a misleading answer.
+    """
+    dual = build_dual(obj_fn, constraints, sense="Minimize")
+
+    if any(sign != "nonnegative" for sign in dual["variable_signs"]):
+        raise ValueError(
+            "The dual contains nonpositive or unrestricted variables. The current Simplex backend cannot solve this form yet."
+        )
+    if any(c["op"] != "<=" for c in dual["constraints"]):
+        raise ValueError(
+            "The dual contains >= or = constraints. Use the planned Big M/Two-Phase solver for this form."
+        )
+    if any(c["rhs"] < -EPSILON for c in dual["constraints"]):
+        raise ValueError(
+            "The dual has a negative RHS and needs a solver that can construct a feasible starting basis."
+        )
+
+    result = max_simplex(dual["objective"], dual["constraints"])
+    result["dual_problem"] = dual
+    result["steps"] = list(dual["steps"])
+    for snapshot in result.get("tableau_history", []):
+        snapshot["title"] = "Dual problem — " + snapshot.get("title", "tableau")
+    if result.get("status") != "optimal":
+        return result
+
+    recovered, recovery_steps = recover_primal_by_complementary_slackness(
+        obj_fn, constraints, result["solution"], result
+    )
+    result["steps"].extend(recovery_steps)
+    result["dual_solution"] = result["solution"]
+    if recovered is None:
+        result["status"] = "recovery_failed"
+        result["solution"] = None
+        result["optimum"] = None
+        return result
+
+    result["solution"] = recovered["solution"]
+    result["optimum"] = recovered["optimum"]
+    return result
 
 if __name__ == "__main__":
     # Maximize Z = 3x1 + 5x2

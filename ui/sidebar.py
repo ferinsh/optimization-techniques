@@ -22,15 +22,19 @@ class Sidebar(ttk.Frame):
         ttk.Button(
             self, text="Graphical Method", command=lambda: on_navigate("graph")
         ).pack(fill="x", pady=3)
-        ttk.Button(
-            self, text="Simplex Method", command=lambda: on_navigate("simplex")
-        ).pack(fill="x", pady=3)
 
         ttk.Separator(self).pack(fill="x", pady=12)
 
         ttk.Button(
+            self, text="Simplex Method", command=lambda: on_navigate("simplex")
+        ).pack(fill="x", pady=3)
+
+        ttk.Button(
             self, text="Big M Method", command=lambda: on_navigate("big_m")
         ).pack(fill="x", pady=3)
+
+        ttk.Separator(self).pack(fill="x", pady=12)
+
         ttk.Button(
             self,
             text="Transportation",

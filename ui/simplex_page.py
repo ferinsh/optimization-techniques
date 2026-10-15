@@ -15,7 +15,7 @@ import numpy as np
 # else:
 #     max_simplex = None
 
-from solvers.simplex_solver import max_simplex
+from solvers.simplex_solver import max_simplex, min_simplex
 
 from ui.simplex_tableau import SimplexTableauPage
 
@@ -63,7 +63,10 @@ class SimplexPageMixin:
         header = ttk.Frame(page, padding=(20, 16, 20, 8))
         header.grid(row=0, column=0, sticky='ew')
         ttk.Label(header, text='Simplex Method', font=('Arial', 18, 'bold')).pack(anchor='w')
-        ttk.Label(header, text='Maximize a linear objective using the tableau-based Simplex method.').pack(anchor='w', pady=(4, 0))
+        self.simplex_description = ttk.Label(
+            header, text='Maximize a linear objective using the tableau-based Simplex method.'
+        )
+        self.simplex_description.pack(anchor='w', pady=(4, 0))
         content = ttk.Frame(page, padding=(20, 8, 20, 20))
         content.grid(row=1, column=0, sticky='nsew')
         content.columnconfigure(0, weight=1)
@@ -91,10 +94,24 @@ class SimplexPageMixin:
         self.simplex_var_spin.bind('<Return>', lambda _event: self.rebuild_simplex_inputs())
         self.simplex_var_spin.bind('<FocusOut>', lambda _event: self.rebuild_simplex_inputs())
         ttk.Label(settings, text='Goal').grid(row=0, column=2, sticky='w')
-        ttk.Label(settings, text='Maximize', font=('Arial', 9, 'bold')).grid(row=0, column=3, padx=(8, 0), sticky='w')
+        self.simplex_sense = ttk.Combobox(
+            settings, values=['Maximize', 'Minimize'], state='readonly', width=10
+        )
+        self.simplex_sense.set('Maximize')
+        self.simplex_sense.grid(row=0, column=3, padx=(8, 0), sticky='w')
+        # ttk.Label(settings, text='Maximize', font=('Arial', 9, 'bold')).grid(row=0, column=3, padx=(8, 0), sticky='w')
         objective_box = ttk.LabelFrame(content, text='Objective function: Maximize Z', padding=10)
         objective_box.grid(row=1, column=0, sticky='ew', pady=(0, 10))
         self.simplex_objective_box = objective_box
+        self.simplex_sense.bind(
+            '<<ComboboxSelected>>',
+            lambda _event: (
+                objective_box.configure(text=f'Objective function: {self.simplex_sense.get()} Z'),
+                self.simplex_description.configure(
+                    text=f'{self.simplex_sense.get()} a linear objective using the tableau-based Simplex method.'
+                ),
+            ),
+        )
         self.simplex_objective_entries = []
         self.simplex_objective_labels = []
         constraints_box = ttk.LabelFrame(content, text='Constraints (decision variables are non-negative)', padding=10)
@@ -247,8 +264,8 @@ class SimplexPageMixin:
         self.save_simplex_state()
 
     def solve_simplex(self):
-        if max_simplex is None:
-            messagebox.showerror('Simplex solver not found', 'Could not load SIMPLEX_METHOD/solver.py.\nCheck that the file exists in that folder.')
+        if (self.simplex_sense.get() == "Maximize" and max_simplex is None) or (self.simplex_sense.get() == "Minimize" and min_simplex is None):
+            messagebox.showerror('Simplex solver not found', 'Could not load solvers/simplex_solver.py.\nCheck that the file exists in that folder.')
             return
         try:
             objective = [float(entry.get()) for entry in self.simplex_objective_entries]
@@ -272,7 +289,14 @@ class SimplexPageMixin:
             self.simplex_report.delete('1.0', 'end')
             self.simplex_report.insert('end', 'Solving...\n')
             self.root.update_idletasks()
-            result = max_simplex(objective, constraints)
+            # result = max_simplex(objective, constraints)
+            solver = (
+                max_simplex
+                if self.simplex_sense.get() == "Maximize"
+                else min_simplex
+            )
+            result = solver(objective, constraints)
+
             self.tableau_page.display_iterations(
                 result.get("tableau_history", []),
                 objective_value=result.get("optimum"),
@@ -285,11 +309,27 @@ class SimplexPageMixin:
                 self.simplex_report.insert('end', '\nOptimal solution:\n')
                 for index, value in enumerate(result['solution'], start=1):
                     self.simplex_report.insert('end', f'x{index} = {value:.8g}\n')
-                self.simplex_report.insert('end', f"\nMaximum Z = {result['optimum']:.8g}\n")
+                goal_label = "Maximum" if self.simplex_sense.get() == "Maximize" else "Minimum"
+                self.simplex_report.insert('end', f"\n{goal_label} Z = {result['optimum']:.8g}\n")
+                if self.simplex_sense.get() == "Minimize":
+                    dual_solution = result.get("dual_solution")
+                    if dual_solution is not None:
+                        self.simplex_report.insert('end', "\nDual solution:\n")
+                        for index, value in enumerate(dual_solution, start=1):
+                            self.simplex_report.insert('end', f'y{index} = {value:.8g}\n')
+                    steps = result.get("steps", [])
+                    if steps:
+                        self.simplex_report.insert('end', "\nDual conversion and primal recovery steps:\n")
+                        for index, step in enumerate(steps, start=1):
+                            self.simplex_report.insert('end', f'{index}. {step}\n')
             elif result['status'] == 'unbounded':
                 self.simplex_report.insert('end', '\nThe objective is unbounded. No finite maximum exists.\n')
             elif result['status'] == 'iteration_limit':
                 self.simplex_report.insert('end', '\nStopped after reaching the iteration limit.\n')
+            elif result['status'] == 'recovery_failed':
+                self.simplex_report.insert('end', '\nThe dual was solved, but the original primal solution could not be recovered.\n')
+                for step in result.get('steps', []):
+                    self.simplex_report.insert('end', f'- {step}\n')
             else:
                 self.simplex_report.insert('end', '\nThe problem could not be solved by the current basic Simplex implementation.\n')
         except (ValueError, TypeError, OverflowError, ArithmeticError) as error:
@@ -298,6 +338,7 @@ class SimplexPageMixin:
     
     def save_simplex_state(self):
         state = {
+            "simplex_sense": self.simplex_sense.get(),
             "num_variables": self.simplex_var_count.get(),
             "objective": [
                 entry.get()
@@ -340,9 +381,13 @@ class SimplexPageMixin:
             return False
 
         # Validate the complete state before changing the UI.
+        simplex_sense = state.get("simplex_sense")
         num_variables = state.get("num_variables")
         objective = state.get("objective")
         constraints = state.get("constraints")
+
+        if simplex_sense not in ("Maximize", "Minimize"):
+            return False
 
         if (
             not isinstance(num_variables, int)
@@ -372,6 +417,7 @@ class SimplexPageMixin:
                 return False
 
         # Rebuild the variable inputs for the saved variable count.
+        self.simplex_sense.set(simplex_sense)
         self.simplex_var_count.set(num_variables)
         self.rebuild_simplex_inputs()
 
