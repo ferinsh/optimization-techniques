@@ -1,398 +1,332 @@
-"""Simplex-method UI. Existing SIMPLEX_METHOD/solver.py is loaded explicitly."""
-import importlib.util
-from pathlib import Path
-import tkinter as tk
-from tkinter import ttk, messagebox
-import numpy as np
 
-# PROJECT_DIR = Path(__file__).resolve().parents[1]
-# SIMPLEX_SOLVER_PATH = PROJECT_DIR / "SIMPLEX_METHOD" / "solver.py"
-# if SIMPLEX_SOLVER_PATH.exists():
-#     _spec = importlib.util.spec_from_file_location("simplex_method_solver", SIMPLEX_SOLVER_PATH)
-#     _module = importlib.util.module_from_spec(_spec)
-#     _spec.loader.exec_module(_module)
-#     max_simplex = _module.max_simplex
-# else:
-#     max_simplex = None
+EPSILON = 1e-9
 
-from solvers.simplex_solver import max_simplex
+def save_tableau_snapshot(tableau, basis, num_variables, title):
+    """Create a display-ready copy of the current tableau."""
+    num_constraints = len(tableau) - 1
+    num_slack = num_constraints
 
-from ui.simplex_tableau import SimplexTableauPage
+    variable_names = (
+        [f"x{i + 1}" for i in range(num_variables)]
+        + [f"s{i + 1}" for i in range(num_slack)]
+    )
 
-from services.settings import save_method_state, load_method_state
-import json
+    columns = ["Basis"] + variable_names + ["RHS"]
+
+    rows = []
+
+    for row_index, row in enumerate(tableau[:-1]):
+        basic_index = basis[row_index]
+        basic_name = variable_names[basic_index]
+
+        rows.append([basic_name] + row[:-1] + [row[-1]])
+
+    rows.append(["Z"] + tableau[-1][:-1] + [tableau[-1][-1]])
+
+    return {
+        "title": title,
+        "columns": columns,
+        "rows": [row.copy() for row in rows],
+    }
 
 
-class SimplexPageMixin:
+def check_negativity(constraints: list[dict]) -> list[dict]:
+    """Make every RHS non-negative, reversing inequalities when needed."""
+    normalized = []
 
-    def build_simplex_page(self):
-        """Build a working Simplex UI connected to SIMPLEX_METHOD/solver.py."""
-        app_container = ttk.Frame(self.root)
-        app_container.pack(fill="both", expand=True)
-        app_container.rowconfigure(0, weight=1)
-        app_container.columnconfigure(1, weight=1)
+    for constraint in constraints:
+        c = constraint.copy()
 
-        self.page_container = ttk.Frame(app_container, padding=0)
-        self.page_container.grid(row=0, column=1, sticky="nsew")
-        self.page_container.rowconfigure(0, weight=1)
-        self.page_container.columnconfigure(0, weight=1)
-    
-        # Container for the tableau viewer
-        self.tableau_iterations = ttk.Frame(self.page_container)
-        self.tableau_iterations.grid(
-            row=0, column=0, sticky="nsew"
-        )
-        self.tableau_iterations.grid_remove()
+        if c["op"] not in ("<=", ">=", "="):
+            raise ValueError(f"Invalid constraint operator: {c['op']}")
 
-        # Tableau viewer
-        self.tableau_page = SimplexTableauPage(
-            self.tableau_iterations
-        )
-        self.tableau_page.pack(fill="both", expand=True)
+        if c["rhs"] < 0:
+            for key in c:
+                if key not in ("op", "rhs"):
+                    c[key] = -c[key]
 
-        # Return to the Simplex input page
-        ttk.Button(
-            self.tableau_iterations,
-            text="Back to Simplex",
-            command=self.show_simplex_inputs,
-        ).pack(anchor="w", padx=16, pady=(0, 12))
-        
-        page = self.simplex_page
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(1, weight=1)
-        header = ttk.Frame(page, padding=(20, 16, 20, 8))
-        header.grid(row=0, column=0, sticky='ew')
-        ttk.Label(header, text='Simplex Method', font=('Arial', 18, 'bold')).pack(anchor='w')
-        ttk.Label(header, text='Maximize a linear objective using the tableau-based Simplex method.').pack(anchor='w', pady=(4, 0))
-        content = ttk.Frame(page, padding=(20, 8, 20, 20))
-        content.grid(row=1, column=0, sticky='nsew')
-        content.columnconfigure(0, weight=1)
-        content.rowconfigure(3, weight=1)
-        self.simplex_inputs_view = content
+            c["rhs"] = -c["rhs"]
 
-        self.tableau_view = ttk.Frame(page)
-        self.tableau_view.grid(row=1, column=0, sticky="nsew")
-        self.tableau_view.grid_remove()
+            if c["op"] == "<=":
+                c["op"] = ">="
+            elif c["op"] == ">=":
+                c["op"] = "<="
 
-        self.tableau_page = SimplexTableauPage(self.tableau_view)
-        self.tableau_page.pack(fill="both", expand=True, padx=20, pady=10)
+        normalized.append(c)
 
-        ttk.Button(
-            self.tableau_view,
-            text="Back to Simplex",
-            command=self.show_simplex_inputs,
-        ).pack(anchor="w", padx=16, pady=10)
-        settings = ttk.LabelFrame(content, text='Problem setup', padding=10)
-        settings.grid(row=0, column=0, sticky='ew', pady=(0, 10))
-        ttk.Label(settings, text='Number of variables').grid(row=0, column=0, sticky='w')
-        self.simplex_var_count = tk.IntVar(value=2)
-        self.simplex_var_spin = ttk.Spinbox(settings, from_=1, to=10, width=5, textvariable=self.simplex_var_count, command=self.rebuild_simplex_inputs)
-        self.simplex_var_spin.grid(row=0, column=1, padx=(8, 16), sticky='w')
-        self.simplex_var_spin.bind('<Return>', lambda _event: self.rebuild_simplex_inputs())
-        self.simplex_var_spin.bind('<FocusOut>', lambda _event: self.rebuild_simplex_inputs())
-        ttk.Label(settings, text='Goal').grid(row=0, column=2, sticky='w')
-        ttk.Label(settings, text='Maximize', font=('Arial', 9, 'bold')).grid(row=0, column=3, padx=(8, 0), sticky='w')
-        objective_box = ttk.LabelFrame(content, text='Objective function: Maximize Z', padding=10)
-        objective_box.grid(row=1, column=0, sticky='ew', pady=(0, 10))
-        self.simplex_objective_box = objective_box
-        self.simplex_objective_entries = []
-        self.simplex_objective_labels = []
-        constraints_box = ttk.LabelFrame(content, text='Constraints (decision variables are non-negative)', padding=10)
-        constraints_box.grid(row=2, column=0, sticky='ew', pady=(0, 10))
-        self.simplex_constraints_box = constraints_box
-        self.simplex_constraint_header = ttk.Frame(constraints_box)
-        self.simplex_constraint_header.grid(row=0, column=0, sticky='w')
-        self.simplex_rows_frame = ttk.Frame(constraints_box)
-        self.simplex_rows_frame.grid(row=1, column=0, sticky='w')
-        controls = ttk.Frame(constraints_box)
-        controls.grid(row=2, column=0, sticky='w', pady=(8, 0))
-        ttk.Button(controls, text='+ Add constraint', command=self.add_simplex_constraint).pack(side='left', padx=(0, 8))
-        ttk.Button(controls, text='Load example', command=self.load_simplex_example).pack(side='left', padx=(0, 8))
-        ttk.Button(controls, text='Solve', command=self.solve_simplex).pack(side='left')
-        ttk.Button(
-            controls,
-            text="Show Iterations",
-            command=self.show_tableau_iterations,
-        ).pack(side="left", padx=(8, 0))
-        results_box = ttk.LabelFrame(content, text='Simplex result', padding=8)
-        results_box.grid(row=3, column=0, sticky='nsew')
-        results_box.rowconfigure(0, weight=1)
-        results_box.columnconfigure(0, weight=1)
-        self.simplex_report = tk.Text(results_box, height=10, wrap='word', font=('Consolas', 10))
-        self.simplex_report.grid(row=0, column=0, sticky='nsew')
-        simplex_scroll = ttk.Scrollbar(results_box, orient='vertical', command=self.simplex_report.yview)
-        simplex_scroll.grid(row=0, column=1, sticky='ns')
-        self.simplex_report.configure(yscrollcommand=simplex_scroll.set)
-        self.simplex_constraint_rows = []
-        self.simplex_constraint_rows = []
-        self.rebuild_simplex_inputs()
+    return normalized
 
-        if not self.load_simplex_state():
-            self.load_simplex_example()
 
-    def show_tableau_iterations(self):
-        self.simplex_inputs_view.grid_remove()
-        self.tableau_view.grid()
+def convert_to_equations(
+    constraints: list[dict],
+    num_variables: int
+) -> list[list[float]]:
+    """
+    Convert <= constraints into equations by adding slack variables.
 
-    def show_simplex_inputs(self):
-        self.tableau_view.grid_remove()
-        self.simplex_inputs_view.grid()
+    Returns each equation as:
+        [variable coefficients, slack coefficients, RHS]
+    """
+    num_constraints = len(constraints)
+    equations = []
 
-    def rebuild_simplex_inputs(self):
-        """Rebuild objective and constraint coefficient widgets for n variables."""
-        if not hasattr(self, 'simplex_objective_box'):
-            return
-        try:
-            num_variables = int(self.simplex_var_count.get())
-        except (ValueError, tk.TclError):
-            return
-        if not 1 <= num_variables <= 10:
-            return
-        old_objective = [entry.get() for entry in getattr(self, 'simplex_objective_entries', [])]
-        old_constraints = []
-        for row in getattr(self, 'simplex_constraint_rows', []):
-            old_constraints.append({'coefficients': [entry.get() for entry in row['coefficients']], 'op': row['op'].get(), 'rhs': row['rhs'].get()})
-        for widget in self.simplex_objective_box.winfo_children():
-            widget.destroy()
-        self.simplex_objective_entries = []
-        self.simplex_objective_labels = []
-        for j in range(num_variables):
-            ttk.Label(self.simplex_objective_box, text=f'x{j + 1}').grid(row=0, column=2 * j, padx=(2, 4), pady=2)
-            entry = ttk.Entry(self.simplex_objective_box, width=8)
-            entry.grid(row=0, column=2 * j + 1, padx=(0, 8), pady=2)
-            value = old_objective[j] if j < len(old_objective) else '3' if j == 0 else '5' if j == 1 else '0'
-            entry.insert(0, value)
-            self.simplex_objective_entries.append(entry)
-        for widget in self.simplex_constraint_header.winfo_children():
-            widget.destroy()
-        for col in range(num_variables):
-            ttk.Label(self.simplex_constraint_header, text=f'x{col + 1}').grid(row=0, column=col, padx=3, pady=2)
-        ttk.Label(self.simplex_constraint_header, text='Relation').grid(row=0, column=num_variables, padx=3, pady=2)
-        ttk.Label(self.simplex_constraint_header, text='RHS').grid(row=0, column=num_variables + 1, padx=3, pady=2)
-        ttk.Label(self.simplex_constraint_header, text='').grid(row=0, column=num_variables + 2, padx=3, pady=2)
-        for row in getattr(self, 'simplex_constraint_rows', []):
-            for widget in row['widgets']:
-                widget.destroy()
-        self.simplex_constraint_rows = []
-        if old_constraints:
-            for constraint in old_constraints:
-                coefficients = constraint['coefficients'][:num_variables]
-                coefficients += ['0'] * (num_variables - len(coefficients))
-                self.add_simplex_constraint(coefficients=coefficients, op=constraint['op'], rhs=constraint['rhs'])
-        else:
-            self.add_simplex_constraint(coefficients=['1'] + ['0'] * (num_variables - 1), op='<=', rhs='4')
-            self.add_simplex_constraint(coefficients=['0', '2'][:num_variables] + ['0'] * max(0, num_variables - 2), op='<=', rhs='12')
-            self.add_simplex_constraint(coefficients=['3', '2'][:num_variables] + ['0'] * max(0, num_variables - 2), op='<=', rhs='18')
-
-    def add_simplex_constraint(self, coefficients=None, op='<=', rhs='10'):
-        num_variables = len(self.simplex_objective_entries)
-        if coefficients is None:
-            coefficients = ['0'] * num_variables
-            if coefficients:
-                coefficients[0] = '1'
-        else:
-            coefficients = list(coefficients)
-            coefficients = coefficients[:num_variables]
-            coefficients += ['0'] * (num_variables - len(coefficients))
-        row_index = len(self.simplex_constraint_rows)
-        widgets = []
-        coefficient_entries = []
-        for j in range(num_variables):
-            entry = ttk.Entry(self.simplex_rows_frame, width=8)
-            entry.grid(row=row_index, column=j, padx=3, pady=2)
-            entry.insert(0, str(coefficients[j]))
-            coefficient_entries.append(entry)
-            widgets.append(entry)
-        relation = ttk.Combobox(self.simplex_rows_frame, values=['<=', '>=', '='], state='readonly', width=5)
-        relation.grid(row=row_index, column=num_variables, padx=3, pady=2)
-        relation.set(op)
-        widgets.append(relation)
-        rhs_entry = ttk.Entry(self.simplex_rows_frame, width=8)
-        rhs_entry.grid(row=row_index, column=num_variables + 1, padx=3, pady=2)
-        rhs_entry.insert(0, str(rhs))
-        widgets.append(rhs_entry)
-        row_data = {'coefficients': coefficient_entries, 'op': relation, 'rhs': rhs_entry, 'widgets': widgets}
-        remove_button = ttk.Button(self.simplex_rows_frame, text='X', width=3, command=lambda item=row_data: self.remove_simplex_constraint(item))
-        remove_button.grid(row=row_index, column=num_variables + 2, padx=3, pady=2)
-        widgets.append(remove_button)
-        row_data['remove_button'] = remove_button
-        self.simplex_constraint_rows.append(row_data)
-
-    def remove_simplex_constraint(self, item):
-        if item not in self.simplex_constraint_rows:
-            return
-        for widget in item['widgets']:
-            widget.destroy()
-        self.simplex_constraint_rows.remove(item)
-        for row_index, row in enumerate(self.simplex_constraint_rows):
-            for col, widget in enumerate(row['widgets']):
-                widget.grid(row=row_index, column=col, padx=3, pady=2)
-        self.save_simplex_state()
-
-    def load_simplex_example(self):
-        self.simplex_var_count.set(2)
-        self.rebuild_simplex_inputs()
-        for entry, value in zip(self.simplex_objective_entries, ('3', '5')):
-            entry.delete(0, 'end')
-            entry.insert(0, value)
-        for row in list(self.simplex_constraint_rows):
-            for widget in row['widgets']:
-                widget.destroy()
-        self.simplex_constraint_rows.clear()
-        self.add_simplex_constraint(['1', '0'], '<=', '4')
-        self.add_simplex_constraint(['0', '2'], '<=', '12')
-        self.add_simplex_constraint(['3', '2'], '<=', '18')
-        self.simplex_report.delete('1.0', 'end')
-        self.simplex_report.insert('end', 'Example loaded:\nMaximize Z = 3x1 + 5x2\nx1 <= 4\n2x2 <= 12\n3x1 + 2x2 <= 18\n')
-        self.save_simplex_state()
-
-    def solve_simplex(self):
-        if max_simplex is None:
-            messagebox.showerror('Simplex solver not found', 'Could not load SIMPLEX_METHOD/solver.py.\nCheck that the file exists in that folder.')
-            return
-        try:
-            objective = [float(entry.get()) for entry in self.simplex_objective_entries]
-            if not objective or not all((np.isfinite(value) for value in objective)):
-                raise ValueError('Objective coefficients must be finite numbers.')
-            if not self.simplex_constraint_rows:
-                raise ValueError('Add at least one constraint.')
-            constraints = []
-            for index, row in enumerate(self.simplex_constraint_rows, start=1):
-                try:
-                    coefficients = [float(entry.get()) for entry in row['coefficients']]
-                    rhs = float(row['rhs'].get())
-                except ValueError as error:
-                    raise ValueError(f'Constraint {index}: enter numeric coefficients and RHS.') from error
-                if not all((np.isfinite(value) for value in coefficients + [rhs])):
-                    raise ValueError(f'Constraint {index}: values must be finite.')
-                constraint = {f'var{j + 1}': value for j, value in enumerate(coefficients)}
-                constraint['op'] = row['op'].get()
-                constraint['rhs'] = rhs
-                constraints.append(constraint)
-            self.simplex_report.delete('1.0', 'end')
-            self.simplex_report.insert('end', 'Solving...\n')
-            self.root.update_idletasks()
-            result = max_simplex(objective, constraints)
-            self.tableau_page.display_iterations(
-                result.get("tableau_history", []),
-                objective_value=result.get("optimum"),
-                status=result.get("status"),
+    for i, constraint in enumerate(constraints):
+        if constraint["op"] != "<=":
+            raise ValueError(
+                "This Simplex implementation supports <= constraints "
+                "after normalization. Constraints requiring surplus or "
+                "artificial variables need the Big M or Two-Phase method."
             )
-            self.simplex_report.delete('1.0', 'end')
-            self.simplex_report.insert('end', f"Status: {result['status'].upper()}\n")
-            self.simplex_report.insert('end', f"Iterations: {result.get('iterations', '-')}\n")
-            if result['status'] == 'optimal':
-                self.simplex_report.insert('end', '\nOptimal solution:\n')
-                for index, value in enumerate(result['solution'], start=1):
-                    self.simplex_report.insert('end', f'x{index} = {value:.8g}\n')
-                self.simplex_report.insert('end', f"\nMaximum Z = {result['optimum']:.8g}\n")
-            elif result['status'] == 'unbounded':
-                self.simplex_report.insert('end', '\nThe objective is unbounded. No finite maximum exists.\n')
-            elif result['status'] == 'iteration_limit':
-                self.simplex_report.insert('end', '\nStopped after reaching the iteration limit.\n')
-            else:
-                self.simplex_report.insert('end', '\nThe problem could not be solved by the current basic Simplex implementation.\n')
-        except (ValueError, TypeError, OverflowError, ArithmeticError) as error:
-            messagebox.showerror('Simplex input/calculation error', str(error))
 
-    
-    def save_simplex_state(self):
-        state = {
-            "num_variables": self.simplex_var_count.get(),
-            "objective": [
-                entry.get()
-                for entry in self.simplex_objective_entries
-            ],
-            "constraints": [
-                {
-                    "coefficients": [
-                        entry.get()
-                        for entry in row["coefficients"]
-                    ],
-                    "op": row["op"].get(),
-                    "rhs": row["rhs"].get(),
-                }
-                for row in self.simplex_constraint_rows
-            ],
+        row = []
+
+        for j in range(num_variables):
+            key = f"var{j + 1}"
+            row.append(float(constraint.get(key, 0)))
+
+        # Add one slack variable for this constraint.
+        for j in range(num_constraints):
+            row.append(1.0 if i == j else 0.0)
+
+        row.append(float(constraint["rhs"]))
+        equations.append(row)
+
+    return equations
+
+
+def read_lpp(obj_fn: list, constraints: list):
+    """Validate the input and construct the initial simplex tableau."""
+    if not obj_fn:
+        raise ValueError("The objective function needs at least one variable.")
+
+    if not constraints:
+        raise ValueError("Add at least one constraint.")
+
+    if any(not isinstance(v, (int, float)) for v in obj_fn):
+        raise ValueError("Objective coefficients must be numbers.")
+
+    num_variables = len(obj_fn)
+
+    for i, c in enumerate(constraints, start=1):
+        if "rhs" not in c or "op" not in c:
+            raise ValueError(f"Constraint {i} needs 'op' and 'rhs'.")
+
+        if not isinstance(c["rhs"], (int, float)):
+            raise ValueError(f"Constraint {i}: RHS must be numeric.")
+
+        for j in range(num_variables):
+            key = f"var{j + 1}"
+            value = c.get(key, 0)
+
+            if not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"Constraint {i}: {key} must be numeric."
+                )
+
+    constraints = check_negativity(constraints)
+
+    equations = convert_to_equations(
+        constraints, num_variables
+    )
+
+    num_slack = len(constraints)
+    num_total = num_variables + num_slack
+
+    # Objective row: -c1, -c2, ..., 0, 0, ...
+    objective_row = (
+        [-float(c) for c in obj_fn]
+        + [0.0] * num_slack
+        + [0.0]
+    )
+
+    tableau = equations + [objective_row]
+
+    # Initially, each slack variable is basic.
+    basis = [
+        num_variables + i for i in range(num_slack)
+    ]
+
+    return tableau, basis, num_variables, num_total
+
+
+def pivot(tableau, pivot_row, pivot_col):
+    """Perform a Gauss-Jordan pivot operation."""
+    pivot_value = tableau[pivot_row][pivot_col]
+
+    if abs(pivot_value) < EPSILON:
+        raise ArithmeticError("Cannot pivot on a zero value.")
+
+    tableau[pivot_row] = [
+        value / pivot_value
+        for value in tableau[pivot_row]
+    ]
+
+    pivot_width = len(tableau[pivot_row])
+
+    for i in range(len(tableau)):
+        if i == pivot_row:
+            continue
+
+        factor = tableau[i][pivot_col]
+
+        if abs(factor) < EPSILON:
+            continue
+
+        tableau[i] = [
+            tableau[i][j] - factor * tableau[pivot_row][j]
+            for j in range(pivot_width)
+        ]
+
+
+def simplex_iterations(tableau, basis, num_total, num_variables):
+    """Run Simplex iterations and save every tableau."""
+    iteration = 0
+    max_iterations = 1000
+
+    tableau_history = [
+        save_tableau_snapshot(
+            tableau, basis, num_variables, "Initial tableau"
+        )
+    ]
+
+    while iteration < max_iterations:
+        objective_row = tableau[-1]
+
+        # Choose the most negative objective-row coefficient.
+        entering_col = min(
+            range(num_total),
+            key=lambda j: objective_row[j]
+        )
+
+        # No negative coefficient means the solution is optimal.
+        if objective_row[entering_col] >= -EPSILON:
+            return "optimal", iteration, tableau_history
+
+        # Minimum positive ratio test.
+        candidates = []
+
+        for i in range(len(tableau) - 1):
+            coefficient = tableau[i][entering_col]
+
+            if coefficient > EPSILON:
+                ratio = tableau[i][-1] / coefficient
+                candidates.append((ratio, i))
+
+        # No eligible leaving row means the objective is unbounded.
+        if not candidates:
+            return "unbounded", iteration, tableau_history
+
+        _, leaving_row = min(candidates)
+
+        pivot_value = tableau[leaving_row][entering_col]
+        leaving_variable = (
+            f"x{basis[leaving_row] + 1}"
+            if basis[leaving_row] < num_variables
+            else f"s{basis[leaving_row] - num_variables + 1}"
+        )
+        entering_variable = (
+            f"x{entering_col + 1}"
+            if entering_col < num_variables
+            else f"s{entering_col - num_variables + 1}"
+        )
+
+        pivot(tableau, leaving_row, entering_col)
+        basis[leaving_row] = entering_col
+        iteration += 1
+
+        snapshot = save_tableau_snapshot(
+            tableau,
+            basis,
+            num_variables,
+            f"Iteration {iteration}",
+        )
+        snapshot["entering"] = entering_variable
+        snapshot["leaving"] = leaving_variable
+        snapshot["pivot"] = pivot_value
+
+        tableau_history.append(snapshot)
+
+    return "iteration_limit", iteration, tableau_history
+
+def max_simplex(obj_fn: list, constraints: list):
+    """
+    Maximize Z = c1*x1 + c2*x2 + ...
+
+    Assumes all decision variables are non-negative.
+    Supports <= constraints that produce a feasible initial
+    slack-variable basis after RHS normalization.
+    """
+    tableau, basis, num_variables, num_total = read_lpp(
+        obj_fn, constraints
+    )
+
+    status, iterations, tableau_history = simplex_iterations(
+        tableau, basis, num_total, num_variables
+    )
+
+    if status != "optimal":
+        result = {
+            "status": status,
+            "iterations": iterations,
+            "solution": None,
+            "optimum": None,
+            "tableau_history": tableau_history,
         }
+        print(result)
+        return result
 
-        try:
-            save_method_state(
-                self.save_path,
-                "simplex_method",
-                state,
-            )
-        except (OSError, TypeError, ValueError) as error:
-            print(f"Could not save Simplex inputs: {error}")
+    # Non-basic variables are zero; basic variables equal RHS.
+    solution = [0.0] * num_variables
+
+    for row_index, basic_variable in enumerate(basis):
+        if basic_variable < num_variables:
+            solution[basic_variable] = tableau[row_index][-1]
+
+    # The objective row's RHS is the maximum objective value.
+    optimum = tableau[-1][-1]
+
+    # Remove tiny floating-point errors.
+    solution = [
+        0.0 if abs(value) < EPSILON else value
+        for value in solution
+    ]
+
+    if abs(optimum) < EPSILON:
+        optimum = 0.0
+
+    result = {
+        "status": "optimal",
+        "iterations": iterations,
+        "solution": solution,
+        "optimum": optimum,
+        "tableau_history": tableau_history,
+    }
+
+    # print("Status:", result["status"])
+    # print("Iterations:", result["iterations"])
+
+    # for i, value in enumerate(solution, start=1):
+    #     print(f"x{i} = {value:g}")
+
+    # print(f"Maximum Z = {optimum:g}")
+
+    return result
 
 
-    def load_simplex_state(self):
-        try:
-            state = load_method_state(
-                self.save_path,
-                "simplex_method",
-            )
-        except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
-            print(f"Could not load Simplex inputs: {error}")
-            return False
+if __name__ == "__main__":
+    # Maximize Z = 3x1 + 5x2
+    #
+    # Subject to:
+    # x1       <= 4
+    #      2x2 <= 12
+    # 3x1 + 2x2 <= 18
+    # x1, x2 >= 0
 
-        if not state:
-            return False
-
-        # Validate the complete state before changing the UI.
-        num_variables = state.get("num_variables")
-        objective = state.get("objective")
-        constraints = state.get("constraints")
-
-        if (
-            not isinstance(num_variables, int)
-            or isinstance(num_variables, bool)
-            or not 1 <= num_variables <= 10
-        ):
-            return False
-
-        if not isinstance(objective, list) or len(objective) != num_variables:
-            return False
-
-        if not isinstance(constraints, list):
-            return False
-
-        for constraint in constraints:
-            if not isinstance(constraint, dict):
-                return False
-
-            coefficients = constraint.get("coefficients")
-
-            if (
-                not isinstance(coefficients, list)
-                or len(coefficients) != num_variables
-                or constraint.get("op") not in ("<=", ">=", "=")
-                or "rhs" not in constraint
-            ):
-                return False
-
-        # Rebuild the variable inputs for the saved variable count.
-        self.simplex_var_count.set(num_variables)
-        self.rebuild_simplex_inputs()
-
-        # Restore objective coefficients.
-        for entry, value in zip(self.simplex_objective_entries, objective):
-            entry.delete(0, "end")
-            entry.insert(0, str(value))
-
-        # Remove constraints created by the rebuild.
-        for row in list(self.simplex_constraint_rows):
-            for widget in row["widgets"]:
-                widget.destroy()
-
-        self.simplex_constraint_rows.clear()
-
-        # Restore the saved constraints.
-        for constraint in constraints:
-            self.add_simplex_constraint(
-                coefficients=[str(value) for value in constraint["coefficients"]],
-                op=constraint["op"],
-                rhs=str(constraint["rhs"]),
-            )
-
-        return True
+    max_simplex(
+        [3, 5],
+        [
+            {"var1": 1, "var2": 0, "op": "<=", "rhs": 4},
+            {"var1": 0, "var2": 2, "op": "<=", "rhs": 12},
+            {"var1": 3, "var2": 2, "op": "<=", "rhs": 18},
+        ]
+    )
