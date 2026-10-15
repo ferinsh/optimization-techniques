@@ -1,6 +1,34 @@
 
 EPSILON = 1e-9
 
+def save_tableau_snapshot(tableau, basis, num_variables, title):
+    """Create a display-ready copy of the current tableau."""
+    num_constraints = len(tableau) - 1
+    num_slack = num_constraints
+
+    variable_names = (
+        [f"x{i + 1}" for i in range(num_variables)]
+        + [f"s{i + 1}" for i in range(num_slack)]
+    )
+
+    columns = ["Basis"] + variable_names + ["RHS"]
+
+    rows = []
+
+    for row_index, row in enumerate(tableau[:-1]):
+        basic_index = basis[row_index]
+        basic_name = variable_names[basic_index]
+
+        rows.append([basic_name] + row[:-1] + [row[-1]])
+
+    rows.append(["Z"] + tableau[-1][:-1] + [tableau[-1][-1]])
+
+    return {
+        "title": title,
+        "columns": columns,
+        "rows": [row.copy() for row in rows],
+    }
+
 
 def check_negativity(constraints: list[dict]) -> list[dict]:
     """Make every RHS non-negative, reversing inequalities when needed."""
@@ -150,19 +178,18 @@ def pivot(tableau, pivot_row, pivot_col):
         ]
 
 
-def simplex_iterations(tableau, basis, num_total):
-
-    """Run primal Simplex iterations until optimal or unbounded."""
+def simplex_iterations(tableau, basis, num_total, num_variables):
+    """Run Simplex iterations and save every tableau."""
     iteration = 0
     max_iterations = 1000
 
-    while iteration < max_iterations:
-        
-        iteration += 1
-        print(f"iteration {iteration}")
-        for row in tableau:
-            print(row)
+    tableau_history = [
+        save_tableau_snapshot(
+            tableau, basis, num_variables, "Initial tableau"
+        )
+    ]
 
+    while iteration < max_iterations:
         objective_row = tableau[-1]
 
         # Choose the most negative objective-row coefficient.
@@ -173,7 +200,7 @@ def simplex_iterations(tableau, basis, num_total):
 
         # No negative coefficient means the solution is optimal.
         if objective_row[entering_col] >= -EPSILON:
-            return "optimal", iteration
+            return "optimal", iteration, tableau_history
 
         # Minimum positive ratio test.
         candidates = []
@@ -187,15 +214,39 @@ def simplex_iterations(tableau, basis, num_total):
 
         # No eligible leaving row means the objective is unbounded.
         if not candidates:
-            return "unbounded", iteration
+            return "unbounded", iteration, tableau_history
 
         _, leaving_row = min(candidates)
 
+        pivot_value = tableau[leaving_row][entering_col]
+        leaving_variable = (
+            f"x{basis[leaving_row] + 1}"
+            if basis[leaving_row] < num_variables
+            else f"s{basis[leaving_row] - num_variables + 1}"
+        )
+        entering_variable = (
+            f"x{entering_col + 1}"
+            if entering_col < num_variables
+            else f"s{entering_col - num_variables + 1}"
+        )
+
         pivot(tableau, leaving_row, entering_col)
         basis[leaving_row] = entering_col
+        iteration += 1
 
-    return "iteration_limit", iteration
+        snapshot = save_tableau_snapshot(
+            tableau,
+            basis,
+            num_variables,
+            f"Iteration {iteration}",
+        )
+        snapshot["entering"] = entering_variable
+        snapshot["leaving"] = leaving_variable
+        snapshot["pivot"] = pivot_value
 
+        tableau_history.append(snapshot)
+
+    return "iteration_limit", iteration, tableau_history
 
 def max_simplex(obj_fn: list, constraints: list):
     """
@@ -209,8 +260,8 @@ def max_simplex(obj_fn: list, constraints: list):
         obj_fn, constraints
     )
 
-    status, iterations = simplex_iterations(
-        tableau, basis, num_total
+    status, iterations, tableau_history = simplex_iterations(
+        tableau, basis, num_total, num_variables
     )
 
     if status != "optimal":
@@ -219,6 +270,7 @@ def max_simplex(obj_fn: list, constraints: list):
             "iterations": iterations,
             "solution": None,
             "optimum": None,
+            "tableau_history": tableau_history,
         }
         print(result)
         return result
@@ -247,15 +299,16 @@ def max_simplex(obj_fn: list, constraints: list):
         "iterations": iterations,
         "solution": solution,
         "optimum": optimum,
+        "tableau_history": tableau_history,
     }
 
-    print("Status:", result["status"])
-    print("Iterations:", result["iterations"])
+    # print("Status:", result["status"])
+    # print("Iterations:", result["iterations"])
 
-    for i, value in enumerate(solution, start=1):
-        print(f"x{i} = {value:g}")
+    # for i, value in enumerate(solution, start=1):
+    #     print(f"x{i} = {value:g}")
 
-    print(f"Maximum Z = {optimum:g}")
+    # print(f"Maximum Z = {optimum:g}")
 
     return result
 

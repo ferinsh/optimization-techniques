@@ -17,10 +17,43 @@ import numpy as np
 
 from solvers.simplex_solver import max_simplex
 
+from ui.simplex_tableau import SimplexTableauPage
+
 
 class SimplexPageMixin:
+
     def build_simplex_page(self):
         """Build a working Simplex UI connected to SIMPLEX_METHOD/solver.py."""
+        app_container = ttk.Frame(self.root)
+        app_container.pack(fill="both", expand=True)
+        app_container.rowconfigure(0, weight=1)
+        app_container.columnconfigure(1, weight=1)
+
+        self.page_container = ttk.Frame(app_container, padding=0)
+        self.page_container.grid(row=0, column=1, sticky="nsew")
+        self.page_container.rowconfigure(0, weight=1)
+        self.page_container.columnconfigure(0, weight=1)
+    
+        # Container for the tableau viewer
+        self.tableau_iterations = ttk.Frame(self.page_container)
+        self.tableau_iterations.grid(
+            row=0, column=0, sticky="nsew"
+        )
+        self.tableau_iterations.grid_remove()
+
+        # Tableau viewer
+        self.tableau_page = SimplexTableauPage(
+            self.tableau_iterations
+        )
+        self.tableau_page.pack(fill="both", expand=True)
+
+        # Return to the Simplex input page
+        ttk.Button(
+            self.tableau_iterations,
+            text="Back to Simplex",
+            command=self.show_simplex_inputs,
+        ).pack(anchor="w", padx=16, pady=(0, 12))
+        
         page = self.simplex_page
         page.columnconfigure(0, weight=1)
         page.rowconfigure(1, weight=1)
@@ -32,6 +65,20 @@ class SimplexPageMixin:
         content.grid(row=1, column=0, sticky='nsew')
         content.columnconfigure(0, weight=1)
         content.rowconfigure(3, weight=1)
+        self.simplex_inputs_view = content
+
+        self.tableau_view = ttk.Frame(page)
+        self.tableau_view.grid(row=1, column=0, sticky="nsew")
+        self.tableau_view.grid_remove()
+
+        self.tableau_page = SimplexTableauPage(self.tableau_view)
+        self.tableau_page.pack(fill="both", expand=True, padx=20, pady=10)
+
+        ttk.Button(
+            self.tableau_view,
+            text="Back to Simplex",
+            command=self.show_simplex_inputs,
+        ).pack(anchor="w", padx=16, pady=10)
         settings = ttk.LabelFrame(content, text='Problem setup', padding=10)
         settings.grid(row=0, column=0, sticky='ew', pady=(0, 10))
         ttk.Label(settings, text='Number of variables').grid(row=0, column=0, sticky='w')
@@ -59,6 +106,11 @@ class SimplexPageMixin:
         ttk.Button(controls, text='+ Add constraint', command=self.add_simplex_constraint).pack(side='left', padx=(0, 8))
         ttk.Button(controls, text='Load example', command=self.load_simplex_example).pack(side='left', padx=(0, 8))
         ttk.Button(controls, text='Solve', command=self.solve_simplex).pack(side='left')
+        ttk.Button(
+            controls,
+            text="Show Iterations",
+            command=self.show_tableau_iterations,
+        ).pack(side="left", padx=(8, 0))
         results_box = ttk.LabelFrame(content, text='Simplex result', padding=8)
         results_box.grid(row=3, column=0, sticky='nsew')
         results_box.rowconfigure(0, weight=1)
@@ -71,6 +123,14 @@ class SimplexPageMixin:
         self.simplex_constraint_rows = []
         self.rebuild_simplex_inputs()
         self.load_simplex_example()
+
+    def show_tableau_iterations(self):
+        self.simplex_inputs_view.grid_remove()
+        self.tableau_view.grid()
+
+    def show_simplex_inputs(self):
+        self.tableau_view.grid_remove()
+        self.simplex_inputs_view.grid()
 
     def rebuild_simplex_inputs(self):
         """Rebuild objective and constraint coefficient widgets for n variables."""
@@ -176,11 +236,11 @@ class SimplexPageMixin:
         self.add_simplex_constraint(['0', '2'], '<=', '12')
         self.add_simplex_constraint(['3', '2'], '<=', '18')
         self.simplex_report.delete('1.0', 'end')
-        self.simplex_report.insert('end', 'Example loaded:nMaximize Z = 3x1 + 5x2nx1 <= 4n2x2 <= 12n3x1 + 2x2 <= 18n')
+        self.simplex_report.insert('end', 'Example loaded:\nMaximize Z = 3x1 + 5x2\nx1 <= 4\n2x2 <= 12\n3x1 + 2x2 <= 18\n')
 
     def solve_simplex(self):
         if max_simplex is None:
-            messagebox.showerror('Simplex solver not found', 'Could not load SIMPLEX_METHOD/solver.py.nCheck that the file exists in that folder.')
+            messagebox.showerror('Simplex solver not found', 'Could not load SIMPLEX_METHOD/solver.py.\nCheck that the file exists in that folder.')
             return
         try:
             objective = [float(entry.get()) for entry in self.simplex_objective_entries]
@@ -205,6 +265,11 @@ class SimplexPageMixin:
             self.simplex_report.insert('end', 'Solving...\n')
             self.root.update_idletasks()
             result = max_simplex(objective, constraints)
+            self.tableau_page.display_iterations(
+                result.get("tableau_history", []),
+                objective_value=result.get("optimum"),
+                status=result.get("status"),
+            )
             self.simplex_report.delete('1.0', 'end')
             self.simplex_report.insert('end', f"Status: {result['status'].upper()}\n")
             self.simplex_report.insert('end', f"Iterations: {result.get('iterations', '-')}\n")
