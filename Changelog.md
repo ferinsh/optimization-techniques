@@ -2,6 +2,13 @@
 
 Notable changes to Optimization Techniques are documented here.
 
+## [0.2.3]
+
+### Added
+- Added minimization support to the Simplex Method through dual conversion.
+- Added dual solution reporting and primal solution recovery using complementary slackness and active-constraint checks.
+- Added step-by-step explanations of dual conversion and primal recovery.
+
 ## [0.2.2]
 
 ### Changed
@@ -40,4 +47,5 @@ Notable changes to Optimization Techniques are documented here.
 - Big M Method.
 - Two-Phase Method.
 - Transportation Problems.
-- Step-by-step Simplex tableau visualization.
+- Improved detection and reporting of multiple optimal solutions.
+- More comprehensive Simplex tableau visualization and solver tests.
